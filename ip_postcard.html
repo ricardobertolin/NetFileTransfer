@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IP Postcard — Internet Protocol Visualizer</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: #0b5c5c; font-family: Tahoma, "Segoe UI", Geneva, Verdana, sans-serif; }
+  textarea:focus, input:focus { outline: 1px dotted #000; outline-offset: -3px; }
+  textarea::-webkit-scrollbar { width: 16px; }
+  textarea::-webkit-scrollbar-track { background: #dfdfdf; box-shadow: inset 1px 1px 0 #808080, inset -1px -1px 0 #fff; }
+  textarea::-webkit-scrollbar-thumb { background: #c0c0c0; box-shadow: inset -1px -1px 0 #000, inset 1px 1px 0 #fff, inset -2px -2px 0 #808080, inset 2px 2px 0 #dfdfdf; }
+  [data-hexscroll]::-webkit-scrollbar { width: 14px; }
+  [data-hexscroll]::-webkit-scrollbar-track { background: #dfdfdf; box-shadow: inset 1px 1px 0 #808080, inset -1px -1px 0 #fff; }
+  [data-hexscroll]::-webkit-scrollbar-thumb { background: #c0c0c0; box-shadow: inset -1px -1px 0 #000, inset 1px 1px 0 #fff, inset -2px -2px 0 #808080, inset 2px 2px 0 #dfdfdf; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const { useState, useEffect, useRef } = React;
+const e = React.createElement;
+
+/* ─── constants ──────────────────────────────────────────────────────────── */
+
+const HOSTS = {
+  A: { name: "Host A", ip: "10.0.1.2",    node: 0 },
+  D: { name: "Host D", ip: "192.168.1.2", node: 4 },
+};
+const WP = [
+  { left: "7%",  top: "205px" },
+  { left: "28%", top: "122px" },
+  { left: "50%", top: "50px"  },
+  { left: "72%", top: "122px" },
+  { left: "93%", top: "205px" },
+];
+const NODE_LABELS = ["Host A", "Switch 1", "Router", "Switch 2", "Host D"];
+const PHASE_NAMES = {
+  idle: "IDLE", init: "INIT", sealing: "SEALING",
+  encapsulate: "ENCAPSULATE", travel: "ROUTING", decapsulate: "DECAPSULATE",
+};
+
+const UP   = "inset -1px -1px 0 #000,inset 1px 1px 0 #fff,inset -2px -2px 0 #808080,inset 2px 2px 0 #dfdfdf";
+const DOWN = "inset 1px 1px 0 #000,inset -1px -1px 0 #fff,inset 2px 2px 0 #808080,inset -2px -2px 0 #dfdfdf";
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ─── small reusable widgets ─────────────────────────────────────────────── */
+
+function WinButton({ onClick, disabled, children, style }) {
+  const [dn, setDn] = useState(false);
+  return e("button", {
+    onClick, disabled,
+    onMouseDown: () => setDn(true),
+    onMouseUp: () => setDn(false),
+    onMouseLeave: () => setDn(false),
+    style: {
+      cursor: disabled ? "default" : "pointer",
+      fontFamily: "Tahoma,sans-serif", fontSize: "12px", fontWeight: "700",
+      padding: "5px 20px", background: "#c0c0c0", border: 0,
+      color: disabled ? "#707070" : "#000",
+      boxShadow: dn ? DOWN : UP,
+      ...style
+    }
+  }, children);
+}
+
+function SmallBtn({ onClick, children }) {
+  const [dn, setDn] = useState(false);
+  return e("span", {
+    onClick,
+    onMouseDown: () => setDn(true),
+    onMouseUp: () => setDn(false),
+    onMouseLeave: () => setDn(false),
+    style: {
+      cursor: "pointer", padding: "2px 7px", background: "#c0c0c0",
+      boxShadow: dn ? DOWN : UP, fontSize: "10px", userSelect: "none"
+    }
+  }, children);
+}
+
+/* ─── network node components ────────────────────────────────────────────── */
+
+function GlowRing({ on }) {
+  return e("div", { style: {
+    position: "absolute", inset: "-5px", border: "2px solid #2fd24f",
+    borderRadius: "6px", boxShadow: "0 0 14px 3px rgba(47,210,79,.65)",
+    pointerEvents: "none", transition: "opacity .25s", opacity: on ? 1 : 0, zIndex: 1
+  }});
+}
+
+function HostPC({ name, ip, left, top, glowOn, senderOn, onClick }) {
+  const [hov, setHov] = useState(false);
+  return e("div", {
+    onClick,
+    onMouseEnter: () => setHov(true),
+    onMouseLeave: () => setHov(false),
+    style: {
+      position: "absolute", left, top, transform: "translate(-50%,-50%)", zIndex: 2,
+      display: "flex", flexDirection: "column", alignItems: "center", width: "96px",
+      cursor: "pointer", filter: hov ? "brightness(1.05)" : "none"
+    }
+  },
+    e(GlowRing, { on: glowOn }),
+    e("div", { style: {
+      position: "absolute", inset: "-7px", border: "2px dashed #f59e0b", borderRadius: "6px",
+      boxShadow: "0 0 0 3px rgba(245,158,11,.15)", pointerEvents: "none",
+      transition: "opacity .2s", opacity: senderOn ? 1 : 0, zIndex: 0
+    }}),
+    e("div", { style: {
+      position: "absolute", top: "-20px", left: "50%", transform: "translateX(-50%)",
+      whiteSpace: "nowrap", fontSize: "9px", fontWeight: "700", color: "#7a4a00",
+      background: "#ffd87a", boxShadow: "0 0 0 1px #b5862a", padding: "1px 6px", borderRadius: "2px",
+      pointerEvents: "none", transition: "opacity .2s", opacity: senderOn ? 1 : 0, zIndex: 3
+    }}, "SENDER ▸"),
+    e("div", { style: {
+      width: "52px", height: "40px",
+      background: "linear-gradient(#ece7d6,#cfc8b1)",
+      boxShadow: "inset -1px -1px 0 #000,inset 1px 1px 0 #fff,inset -2px -2px 0 #908a76,inset 2px 2px 0 #f5f1e4",
+      borderRadius: "2px", padding: "4px"
+    }},
+      e("div", { style: {
+        width: "100%", height: "100%",
+        background: "linear-gradient(135deg,#2a6f8f,#16415c)", boxShadow: "inset 1px 1px 2px #000"
+      }})
+    ),
+    e("div", { style: { width: "18px", height: "5px", background: "#bdb6a0", boxShadow: "inset -1px -1px 0 #807a68" }}),
+    e("div", { style: { width: "30px", height: "4px", background: "#cfc8b1", boxShadow: "inset -1px -1px 0 #000,inset 1px 1px 0 #fff" }}),
+    e("div", { style: { marginTop: "3px", fontSize: "11px", fontWeight: "700", color: "#1a1a1a" }}, name),
+    e("div", { style: { fontSize: "10px", color: "#6a1fb0", fontWeight: "700" }}, ip)
+  );
+}
+
+function NetworkSwitch({ label, left, top, glowOn }) {
+  return e("div", { style: {
+    position: "absolute", left, top, transform: "translate(-50%,-50%)", zIndex: 2,
+    display: "flex", flexDirection: "column", alignItems: "center", width: "92px"
+  }},
+    e(GlowRing, { on: glowOn }),
+    e("div", { style: {
+      width: "76px", height: "22px", background: "linear-gradient(#48586c,#2d3947)",
+      boxShadow: "inset -1px -1px 0 #000,inset 1px 1px 0 #7d8ea3", borderRadius: "2px",
+      display: "flex", alignItems: "flex-end", gap: "3px", padding: "0 6px 3px"
+    }},
+      ...[0,1,2,3,4,5].map(i => e("div", { key: i, style: { width: "7px", height: "5px", background: "#7fe0ff" }}))
+    ),
+    e("div", { style: { marginTop: "3px", fontSize: "11px", fontWeight: "700", color: "#1a1a1a" }}, label)
+  );
+}
+
+function RouterNode({ glowOn }) {
+  return e("div", { style: {
+    position: "absolute", left: "50%", top: "50px", transform: "translate(-50%,-50%)",
+    zIndex: 2, display: "flex", flexDirection: "column", alignItems: "center", width: "160px"
+  }},
+    e(GlowRing, { on: glowOn }),
+    e("div", { style: { display: "flex", alignItems: "center", gap: "8px" }},
+      e("span", { style: { fontSize: "10px", color: "#6a1fb0", fontWeight: "700" }}, "10.0.1.1"),
+      e("div", { style: {
+        width: "84px", height: "30px",
+        background: "radial-gradient(circle at 50% 30%,#5a6480,#39425a)",
+        boxShadow: "inset -1px -1px 0 #000,inset 1px 1px 0 #8a93ad",
+        borderRadius: "14px / 50%", display: "flex", alignItems: "center", justifyContent: "center", gap: "4px"
+      }},
+        ...["#37e06a","#ffd23a","#37e06a"].map((c, i) =>
+          e("div", { key: i, style: {
+            width: "5px", height: "5px", borderRadius: "50%", background: c,
+            boxShadow: "0 0 4px " + c
+          }})
+        )
+      ),
+      e("span", { style: { fontSize: "10px", color: "#6a1fb0", fontWeight: "700" }}, "192.168.1.1")
+    ),
+    e("div", { style: { marginTop: "3px", fontSize: "11px", fontWeight: "700", color: "#1a1a1a" }}, "Router")
+  );
+}
+
+/* ─── postcard + envelope ─────────────────────────────────────────────────── */
+
+function TravelingPostcard({ pc, packet }) {
+  return e("div", { style: {
+    position: "absolute", left: pc.left, top: pc.top, width: "66px", height: "48px",
+    transform: "translate(-50%,-50%) scale(" + pc.scale + ") rotate(" + (pc.rot || 0) + "deg)",
+    opacity: pc.opacity, transition: pc.transition, zIndex: 7, pointerEvents: "none"
+  }},
+    e("svg", { viewBox: "0 0 64 44", style: {
+      position: "absolute", inset: 0, width: "100%", height: "100%",
+      filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))"
+    }},
+      e("rect", { x: "2", y: "3", width: "60", height: "38", rx: "1.5", fill: "#fff", stroke: "#111", strokeWidth: "2.5" }),
+      e("path", { d: "M3 5 L32 25 L61 5", fill: "none", stroke: "#111", strokeWidth: "2" }),
+      e("path", { d: "M3 40 L24 23", fill: "none", stroke: "#111", strokeWidth: "1.6" }),
+      e("path", { d: "M61 40 L40 23", fill: "none", stroke: "#111", strokeWidth: "1.6" }),
+      e("path", { d: "M26 29 L38 29 L32 38 Z", fill: "#36b34a", stroke: "#1d7a30", strokeWidth: "1" })
+    ),
+    packet && packet.image ? e("div", { style: {
+      position: "absolute", top: "-8px", right: "-8px", width: "19px", height: "19px",
+      background: "#fff", boxShadow: "0 0 0 1.5px #111", borderRadius: "2px",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3
+    }},
+      e("svg", { width: "13", height: "13", viewBox: "0 0 16 16" },
+        e("rect", { x: "1", y: "3", width: "14", height: "10", rx: "1", fill: "#cfe9ff", stroke: "#111", strokeWidth: "1.3" }),
+        e("circle", { cx: "5", cy: "6.5", r: "1.5", fill: "#f5a623" }),
+        e("path", { d: "M2 12.5 L6 8.5 L8.5 11 L11.5 7.5 L14 10.5 L14 12.5 Z", fill: "#2f9e44" })
+      )
+    ) : null,
+    e("div", { style: {
+      position: "absolute", bottom: "-14px", left: "50%", transform: "translateX(-50%)",
+      whiteSpace: "nowrap", fontFamily: "'Lucida Console',monospace", fontSize: "9px",
+      fontWeight: "700", color: "#1a3fae", background: "rgba(255,255,255,.72)", padding: "0 3px"
+    }}, "▸ " + ((packet && packet.dst) || ""))
+  );
+}
+
+function EnvelopeStage({ es }) {
+  if (!es) return null;
+  return e("div", { style: {
+    position: "absolute", top: "45%", left: "50%", transform: "translate(-50%,-50%)",
+    zIndex: 14, width: "168px", height: "112px", perspective: "760px"
+  }},
+    e("div", { style: {
+      position: "absolute", inset: 0, background: "#fdfaf0",
+      boxShadow: "inset 0 0 0 2px #111,0 8px 18px rgba(0,0,0,.45)", borderRadius: "2px", zIndex: 1
+    }}),
+    e("img", { src: es.img, alt: "", style: {
+      position: "absolute", left: "24px", width: "120px", height: "72px",
+      objectFit: "cover", background: "#fff", boxShadow: "0 0 0 2px #111", zIndex: 2,
+      transition: "top .85s ease", top: es.letterIn ? "30px" : "-58px"
+    }}),
+    e("div", { style: {
+      position: "absolute", left: 0, right: 0, bottom: 0, height: "74px",
+      background: "#fffdf5", boxShadow: "inset 0 0 0 2px #111", zIndex: 3, overflow: "hidden", borderRadius: "0 0 2px 2px"
+    }},
+      e("svg", { viewBox: "0 0 168 74", preserveAspectRatio: "none", style: { position: "absolute", inset: 0, width: "100%", height: "100%" }},
+        e("path", { d: "M2 72 L84 6 L166 72", fill: "none", stroke: "#111", strokeWidth: "2" })
+      )
+    ),
+    e("div", { style: {
+      position: "absolute", left: 0, top: 0, width: "100%", height: "52px",
+      background: "#efe3c6", boxShadow: "inset 0 0 0 2px #111",
+      clipPath: "polygon(0 0,100% 0,50% 100%)", transformOrigin: "top center",
+      transition: "transform .6s ease", backfaceVisibility: "hidden",
+      transform: es.flap === "closed" ? "rotateX(0deg)" : "rotateX(178deg)",
+      zIndex: es.flap === "closed" ? 6 : 2
+    }}),
+    e("div", { style: {
+      position: "absolute", bottom: "-24px", left: "50%", transform: "translateX(-50%)",
+      whiteSpace: "nowrap", fontSize: "11px", fontWeight: "700", color: "#15428b"
+    }}, es.mode === "seal" ? "Sealing packet…" : "Opening packet…")
+  );
+}
+
+/* ─── packet inspector ───────────────────────────────────────────────────── */
+
+function PacketInspector({ visible, pkt, onClose }) {
+  if (!visible || !pkt) return null;
+  const rows = [
+    ["Version",   "4",       null],
+    ["Source IP", pkt.src,   "#15428b"],
+    ["Dest IP",   pkt.dst,   "#b00"],
+    ["Protocol",  pkt.proto, null],
+    ["TTL",       pkt.ttl,   null],
+    ["Length",    pkt.len,   null],
+  ];
+  return e("div", { style: {
+    position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+    zIndex: 9999, width: "330px", background: "#c0c0c0",
+    boxShadow: UP + ",3px 3px 0 rgba(0,0,0,.4)", padding: "2px"
+  }},
+    e("div", { style: {
+      display: "flex", alignItems: "center", gap: "6px",
+      background: "linear-gradient(90deg,#00007a,#1078d6)", padding: "2px 3px 2px 6px"
+    }},
+      e("span", { style: { color: "#fff", fontWeight: "700", fontSize: "11px", flex: 1 }},
+        "IPv4 Packet — Ready to Send"),
+      e("span", { onClick: onClose, style: {
+        cursor: "pointer", width: "17px", height: "15px",
+        background: "#c0c0c0", boxShadow: UP,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: "10px", fontWeight: "700", color: "#000"
+      }}, "✕")
+    ),
+    e("div", { style: { padding: "8px 9px" }},
+      e("div", { style: { fontSize: "10px", color: "#444", marginBottom: "6px" }},
+        "Application data is wrapped inside an ",
+        e("b", null, "IPv4 header"),
+        " — like addressing an envelope. ",
+        e("b", null, "Close this window to send it.")
+      ),
+      e("div", { style: {
+        background: "#fff", boxShadow: "inset 1px 1px 0 #808080,inset -1px -1px 0 #fff",
+        padding: "6px 8px", fontFamily: "'Lucida Console',monospace", fontSize: "10px", lineHeight: "1.6"
+      }},
+        ...rows.map(([k, v, c]) =>
+          e("div", { key: k, style: { display: "flex", justifyContent: "space-between" }},
+            e("span", { style: { color: "#888" }}, k),
+            e("b", { style: c ? { color: c } : {}}, v)
+          )
+        ),
+        e("div", { style: { borderTop: "1px dashed #bbb", margin: "4px 0" }}),
+        e("div", { style: { color: "#888" }},
+          "Payload ",
+          e("b", { style: { color: "#1a7a1a" }}, pkt.payloadLabel)
+        ),
+        e("div", { "data-hexscroll": "", style: {
+          color: "#a0741a", wordBreak: "break-all", marginTop: "3px",
+          maxHeight: "88px", overflowY: "auto", background: "#fffdf2",
+          boxShadow: "inset 0 0 0 1px #e6dcc0", padding: "4px 5px", lineHeight: "1.55"
+        }}, pkt.hex)
+      ),
+      e("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: "10px" }},
+        e(WinButton, { onClick: onClose }, "Close & Send ▶")
+      )
+    )
+  );
+}
+
+/* ─── main app ───────────────────────────────────────────────────────────── */
+
+function App() {
+  const [composeText,   setComposeText]   = useState("");
+  const [attachedImage, setAttachedImage] = useState("");
+  const [attachName,    setAttachName]    = useState("");
+  const [senderId,      setSenderId]      = useState("A");
+  const [sending,       setSending]       = useState(false);
+  const [phase,         setPhase]         = useState("idle");
+  const [status,        setStatus]        = useState(
+    "Ready. Host A is the sender — type a message (or attach a photo) and press Send. Click a PC to change the sender."
+  );
+  const [packet,     setPacket]     = useState(null);
+  const [activeNode, setActiveNode] = useState(-1);
+  const [pc, setPC] = useState({ left: "7%", top: "205px", scale: 0, opacity: 0, rot: 0, transition: "none" });
+  const [envStage,         setEnvStage]         = useState(null);
+  const [inspectorVisible, setInspectorVisible] = useState(false);
+  const [inbox, setInbox] = useState({ A: [], D: [] });
+
+  const aliveRef  = useRef(true);
+  const resolveInspectorRef = useRef(null);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
+  const alive = () => aliveRef.current;
+
+  /* helpers */
+
+  function imageHex(dataURL) {
+    try {
+      const b64 = (dataURL || "").split(",")[1] || "";
+      const bin = atob(b64);
+      const max = Math.min(bin.length, 8192);
+      const out = [];
+      for (let i = 0; i < max; i++) out.push(bin.charCodeAt(i).toString(16).padStart(2, "0").toUpperCase());
+      let s = out.join(" ");
+      if (bin.length > max) s += "  … (" + (bin.length - max) + " more bytes)";
+      return s;
+    } catch(err) { return "FF D8 FF E0 00 10 4A 46 49 46"; }
+  }
+
+  function hopMsg(node, isLast, R) {
+    if (isLast) return "Arriving at " + R.name + " (" + R.ip + ")…";
+    if (node === 2) return "Router: routing the packet across networks → " + R.ip + " (TTL 63).";
+    return NODE_LABELS[node] + ": forwarding frame by destination MAC address…";
+  }
+
+  /* envelope seal / open animation */
+  async function playEnvelope(mode, img) {
+    if (mode === "seal") {
+      setEnvStage({ img, flap: "open", letterIn: false, mode: "seal" });
+      await sleep(90);  if (!alive()) return;
+      setEnvStage(s => ({ ...s, letterIn: true }));
+      await sleep(950); if (!alive()) return;
+      setEnvStage(s => ({ ...s, flap: "closed" }));
+      await sleep(720); if (!alive()) return;
+      setEnvStage(null);
+    } else {
+      setEnvStage({ img, flap: "closed", letterIn: true, mode: "open" });
+      await sleep(90);  if (!alive()) return;
+      setEnvStage(s => ({ ...s, flap: "open" }));
+      await sleep(680); if (!alive()) return;
+      setEnvStage(s => ({ ...s, letterIn: false }));
+      await sleep(900); if (!alive()) return;
+      setEnvStage(null);
+    }
+  }
+
+  /* pick sender */
+  function pick(id) {
+    if (sending || senderId === id) return;
+    const o = HOSTS[id], other = HOSTS[id === "A" ? "D" : "A"];
+    setSenderId(id);
+    setStatus("Sender = " + o.name + " (" + o.ip + "). Compose a message to send to " + other.name + " (" + other.ip + ").");
+  }
+
+  /* inspector close — unblocks the send sequence */
+  function onInspectorClose() {
+    const r = resolveInspectorRef.current;
+    resolveInspectorRef.current = null;
+    setInspectorVisible(false);
+    if (r) r();
+  }
+
+  /* full send sequence */
+  async function runSend() {
+    if (sending) return;
+    const text  = (composeText || "").trim();
+    const image = attachedImage || "";
+    if (!text && !image) { setStatus("⚠ Nothing to send — type a message or attach a photo first."); return; }
+
+    const sId = senderId, rId = sId === "A" ? "D" : "A";
+    const S = HOSTS[sId], R = HOSTS[rId];
+    const src = S.ip, dst = R.ip;
+
+    const kb           = image ? Math.max(1, Math.round((image.length * 0.75) / 1024)) : 0;
+    const hex          = text ? text.split("").map(c => c.charCodeAt(0).toString(16).padStart(2,"0").toUpperCase()).join(" ") : imageHex(image);
+    const payloadLabel = image ? ("photo " + kb + " KB" + (text ? " + " + text.length + " chars" : "")) : (text.length + " chars");
+    const len          = image ? (kb + " KB") : ((20 + text.length) + " bytes");
+    const pkt          = { src, dst, proto: "TCP", ttl: 64, len, payloadLabel, hex,
+                           text: text.slice(0, 60) + (text.length > 60 ? "…" : ""), image };
+
+    const order = sId === "A" ? [0,1,2,3,4] : [4,3,2,1,0];
+
+    setSending(true); setPhase("init"); setActiveNode(order[0]); setPacket(pkt);
+    setStatus("Preparing to send from " + S.name + "…");
+    await sleep(300); if (!alive()) return;
+
+    /* phase 1 — seal photo into envelope */
+    if (image) {
+      setPhase("sealing"); setStatus("Placing the photo inside the envelope and sealing it…");
+      await playEnvelope("seal", image); if (!alive()) return;
+    }
+
+    /* phase 2 — show packet inspector; wait for user to close it */
+    setPhase("encapsulate"); setActiveNode(order[0]); setInspectorVisible(true);
+    setStatus("Packet built (src " + src + " → dst " + dst + "). Close the window to send it.");
+    setPC({ ...WP[order[0]], scale: 0.55, opacity: 0, rot: 0, transition: "none" });
+    await new Promise(res => { resolveInspectorRef.current = res; }); if (!alive()) return;
+
+    /* phase 3 — postcard appears at sender */
+    setPhase("travel");
+    setPC({ ...WP[order[0]], scale: 1, opacity: 1, rot: -6, transition: "transform .35s ease-out, opacity .35s" });
+    await sleep(420); if (!alive()) return;
+
+    /* phase 4 — travel hop by hop */
+    for (let k = 1; k < order.length; k++) {
+      const node = order[k];
+      setStatus(hopMsg(node, k === order.length - 1, R));
+      setActiveNode(node);
+      setPC({ ...WP[node], scale: 0.82, opacity: 1, rot: k % 2 ? 5 : -5,
+        transition: "left .9s ease-in-out, top .9s ease-in-out, transform .9s ease-in-out" });
+      await sleep(950); if (!alive()) return;
+    }
+
+    /* phase 5 — decapsulate at receiver */
+    const endNode = order[order.length - 1];
+    setPhase("decapsulate"); setStatus("Decapsulating: stripping the IP header at " + R.name + "…");
+
+    if (image) {
+      setPC({ ...WP[endNode], scale: 0.5, opacity: 0, rot: 0, transition: "transform .3s, opacity .3s" });
+      await sleep(320); if (!alive()) return;
+      setStatus("Opening the envelope and releasing the photo at " + R.name + "…");
+      await playEnvelope("open", image); if (!alive()) return;
+    } else {
+      setPC({ ...WP[endNode], scale: 1.15, opacity: 1, rot: 0, transition: "transform .4s ease-out" });
+      await sleep(800); if (!alive()) return;
+      setPC({ ...WP[endNode], scale: 0.4, opacity: 0, rot: 0, transition: "transform .4s ease-in, opacity .4s" });
+      await sleep(420); if (!alive()) return;
+    }
+
+    /* phase 6 — deliver to inbox */
+    const now  = new Date();
+    const time = [now.getHours(), now.getMinutes(), now.getSeconds()].map(n => String(n).padStart(2,"0")).join(":");
+    const item = { id: Date.now(), from: src, time, text: pkt.text, image, hasText: !!text };
+    setInbox(prev => ({ ...prev, [rId]: [item, ...prev[rId]] }));
+    await sleep(50); if (!alive()) return;
+
+    setSending(false); setPhase("idle"); setActiveNode(-1);
+    setComposeText(""); setAttachedImage(""); setAttachName("");
+    setStatus("✓ Delivered — packet received and reassembled at " + R.name + " (" + R.ip + ").");
+  }
+
+  /* derived */
+  const rId      = senderId === "A" ? "D" : "A";
+  const S        = HOSTS[senderId], R = HOSTS[rId];
+  const recvList = inbox[rId] || [];
+
+  /* ── render ─────────────────────────────────────────────────────────────── */
+  return e("div", { style: {
+    minHeight: "100vh", width: "100%",
+    background: "repeating-linear-gradient(45deg,#0b5c5c,#0b5c5c 18px,#0a5656 18px,#0a5656 36px)",
+    display: "flex", alignItems: "center", justifyContent: "center", padding: "22px 14px"
+  }},
+
+    e("div", { style: {
+      width: "980px", maxWidth: "100%", background: "#c0c0c0",
+      boxShadow: UP + ",4px 4px 0 rgba(0,0,0,.35)", padding: "3px"
+    }},
+
+      /* title bar */
+      e("div", { style: {
+        display: "flex", alignItems: "center", gap: "6px",
+        background: "linear-gradient(90deg,#00007a 0%,#1078d6 100%)", padding: "3px 3px 3px 5px"
+      }},
+        e("div", { style: {
+          width: "15px", height: "15px", background: "#c0c0c0", boxShadow: UP,
+          display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px"
+        }}, "✉"),
+        e("span", { style: {
+          color: "#fff", fontWeight: "700", fontSize: "12px", letterSpacing: ".2px", flex: 1
+        }}, "IP Postcard — Internet Protocol Visualizer"),
+        ...["_", "▢", "✕"].map((ch, i) =>
+          e("div", { key: i, style: {
+            width: "17px", height: "15px", background: "#c0c0c0", boxShadow: UP,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: i === 0 ? "11px" : "10px", fontWeight: i === 2 ? "700" : "normal",
+            ...(i === 0 ? { alignItems: "flex-end", paddingBottom: "2px" } : {})
+          }}, ch)
+        )
+      ),
+
+      /* menu bar */
+      e("div", { style: { display: "flex", gap: "2px", padding: "2px 4px", fontSize: "12px" }},
+        ...[["F","ile"],["E","dit"],["V","iew"],["P","acket"],["H","elp"]].map(([u, rest]) =>
+          e("span", { key: u, style: { padding: "2px 7px" }},
+            e("u", null, u), rest)
+        )
+      ),
+
+      /* window body */
+      e("div", { style: { padding: "8px" }},
+
+        /* network map */
+        e("div", { style: {
+          position: "relative", height: "262px",
+          background: "linear-gradient(#eef4fb,#e3ecf6)",
+          backgroundImage: [
+            "linear-gradient(#eef4fb,#e3ecf6)",
+            "repeating-linear-gradient(0deg,rgba(120,150,180,.10) 0 1px,transparent 1px 22px)",
+            "repeating-linear-gradient(90deg,rgba(120,150,180,.10) 0 1px,transparent 1px 22px)"
+          ].join(","),
+          boxShadow: "inset 1px 1px 0 #808080,inset -1px -1px 0 #fff,inset 2px 2px 0 #000,inset -2px -2px 0 #dfdfdf",
+          overflow: "hidden"
+        }},
+          e("div", { style: {
+            position: "absolute", top: "5px", left: "8px", fontSize: "11px",
+            color: "#3a5a7a", fontWeight: "700", letterSpacing: ".3px", zIndex: 3
+          }}, "NETWORK TOPOLOGY"),
+          e("div", { style: {
+            position: "absolute", top: "5px", right: "8px", fontSize: "10px",
+            color: "#7a6a3a", fontWeight: "700", zIndex: 3
+          }}, "▸ click a PC to pick the sender"),
+
+          /* wires */
+          e("svg", { viewBox: "0 0 1000 262", preserveAspectRatio: "none",
+            style: { position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 0 }},
+            e("line", { x1: "70",  y1: "205", x2: "280", y2: "122", stroke: "#36506b", strokeWidth: "3" }),
+            e("line", { x1: "280", y1: "122", x2: "500", y2: "50",  stroke: "#36506b", strokeWidth: "3" }),
+            e("line", { x1: "500", y1: "50",  x2: "720", y2: "122", stroke: "#36506b", strokeWidth: "3" }),
+            e("line", { x1: "720", y1: "122", x2: "930", y2: "205", stroke: "#36506b", strokeWidth: "3" })
+          ),
+
+          e(HostPC, { name: "Host A", ip: "10.0.1.2", left: "7%", top: "205px",
+            glowOn: activeNode === 0, senderOn: senderId === "A", onClick: () => pick("A") }),
+          e(NetworkSwitch, { label: "Switch 1", left: "28%", top: "122px", glowOn: activeNode === 1 }),
+          e(RouterNode, { glowOn: activeNode === 2 }),
+          e(NetworkSwitch, { label: "Switch 2", left: "72%", top: "122px", glowOn: activeNode === 3 }),
+          e(HostPC, { name: "Host D", ip: "192.168.1.2", left: "93%", top: "205px",
+            glowOn: activeNode === 4, senderOn: senderId === "D", onClick: () => pick("D") }),
+
+          e(TravelingPostcard, { pc, packet }),
+          envStage ? e(EnvelopeStage, { es: envStage }) : null,
+          e(PacketInspector, { visible: inspectorVisible, pkt: packet, onClose: onInspectorClose })
+        ),
+
+        /* compose + inbox */
+        e("div", { style: { display: "flex", gap: "8px", marginTop: "8px", alignItems: "stretch" }},
+
+          /* compose */
+          e("div", { style: {
+            flex: 1, background: "#c0c0c0",
+            boxShadow: "inset -1px -1px 0 #808080,inset 1px 1px 0 #fff", padding: "7px"
+          }},
+            e("div", { style: { fontSize: "11px", fontWeight: "700", marginBottom: "5px", color: "#15428b" }},
+              "▣ Compose — " + S.name + " (" + S.ip + ")"),
+            e("textarea", {
+              value: composeText,
+              onChange: ev => setComposeText(ev.target.value),
+              placeholder: "Type a message…",
+              style: {
+                width: "100%", height: "64px", resize: "none", border: 0, background: "#fff",
+                boxShadow: "inset 1px 1px 0 #808080,inset -1px -1px 0 #fff,inset 2px 2px 0 #000",
+                padding: "5px 6px", fontFamily: "Tahoma,sans-serif", fontSize: "12px", color: "#000"
+              }
+            }),
+            e("div", { style: { display: "flex", alignItems: "center", gap: "7px", marginTop: "7px" }},
+              e("label", { style: {
+                position: "relative", cursor: "pointer", display: "inline-block",
+                whiteSpace: "nowrap", fontFamily: "Tahoma,sans-serif", fontSize: "11px",
+                padding: "4px 10px", background: "#c0c0c0", boxShadow: UP
+              }},
+                "Attach Photo…",
+                e("input", {
+                  type: "file", accept: "image/*",
+                  onChange: ev => {
+                    const f = ev.target.files && ev.target.files[0]; if (!f) return;
+                    const r = new FileReader();
+                    r.onload = () => { setAttachedImage(r.result); setAttachName(f.name); };
+                    r.readAsDataURL(f); ev.target.value = "";
+                  },
+                  style: { position: "absolute", width: 0, height: 0, opacity: 0 }
+                })
+              ),
+              attachedImage ? e("div", { style: {
+                display: "flex", alignItems: "center", gap: "5px",
+                background: "#fff", boxShadow: "inset 1px 1px 0 #808080,inset -1px -1px 0 #fff", padding: "3px 5px"
+              }},
+                e("img", { src: attachedImage, alt: "", style: {
+                  width: "24px", height: "24px", objectFit: "cover", boxShadow: "0 0 0 1px #999"
+                }}),
+                e("span", { style: {
+                  fontSize: "10px", maxWidth: "90px", overflow: "hidden",
+                  textOverflow: "ellipsis", whiteSpace: "nowrap"
+                }}, attachName),
+                e("span", {
+                  onClick: () => { setAttachedImage(""); setAttachName(""); },
+                  style: {
+                    cursor: "pointer", width: "15px", height: "15px", background: "#c0c0c0",
+                    boxShadow: UP, display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: "9px", fontWeight: "700"
+                  }
+                }, "✕")
+              ) : null,
+              e("div", { style: { flex: 1 }}),
+              e(WinButton, { onClick: runSend, disabled: sending },
+                sending ? "Sending…" : "Send ▶")
+            )
+          ),
+
+          /* inbox */
+          e("div", { style: {
+            flex: 1, background: "#c0c0c0",
+            boxShadow: "inset -1px -1px 0 #808080,inset 1px 1px 0 #fff", padding: "7px",
+            display: "flex", flexDirection: "column"
+          }},
+            e("div", { style: { display: "flex", alignItems: "center", marginBottom: "5px" }},
+              e("div", { style: { fontSize: "11px", fontWeight: "700", color: "#b00", flex: 1 }},
+                "▣ Inbox — " + R.name + " (" + R.ip + ")"),
+              e(SmallBtn, { onClick: () => setInbox({ A: [], D: [] }) }, "Clear")
+            ),
+            e("div", { style: {
+              flex: 1, height: "96px", overflowY: "auto", background: "#fff",
+              boxShadow: "inset 1px 1px 0 #808080,inset -1px -1px 0 #fff,inset 2px 2px 0 #000", padding: "5px"
+            }},
+              recvList.length === 0
+                ? e("div", { style: { color: "#999", fontSize: "11px", fontStyle: "italic", padding: "8px 4px" }},
+                    "No packets received at this host yet.")
+                : recvList.map(item =>
+                    e("div", { key: item.id, style: {
+                      borderBottom: "1px dotted #cfcfcf", padding: "5px 3px",
+                      display: "flex", gap: "7px", alignItems: "flex-start"
+                    }},
+                      item.image ? e("img", { src: item.image, alt: "", style: {
+                        width: "42px", height: "42px", objectFit: "cover",
+                        boxShadow: "0 0 0 1px #999", flex: "none"
+                      }}) : null,
+                      e("div", { style: { flex: 1, minWidth: 0 }},
+                        e("div", { style: { fontSize: "10px", color: "#15428b", fontWeight: "700" }},
+                          "From " + item.from + " · " + item.time),
+                        item.hasText
+                          ? e("div", { style: { fontSize: "12px", color: "#111", wordBreak: "break-word", marginTop: "1px" }},
+                              item.text)
+                          : null
+                      )
+                    )
+                  )
+            )
+          )
+        ),
+
+        /* status bar */
+        e("div", { style: { display: "flex", gap: "5px", marginTop: "8px" }},
+          e("div", { style: {
+            flex: 1, background: "#c0c0c0",
+            boxShadow: "inset 1px 1px 0 #808080,inset -1px -1px 0 #fff",
+            padding: "3px 7px", fontSize: "11px", color: "#222", display: "flex", alignItems: "center"
+          }}, status),
+          e("div", { style: {
+            background: "#c0c0c0", boxShadow: "inset 1px 1px 0 #808080,inset -1px -1px 0 #fff",
+            padding: "3px 9px", fontSize: "11px", fontWeight: "700", color: "#15428b",
+            display: "flex", alignItems: "center"
+          }}, PHASE_NAMES[phase] || "IDLE")
+        )
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(e(App, null));
+</script>
+</body>
+</html>
