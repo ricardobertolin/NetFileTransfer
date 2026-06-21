@@ -1,3 +1,8 @@
+
+
+https://github.com/user-attachments/assets/11835740-0650-4f9e-9c06-961ce1c7d0e8
+
+
 # NetFileTransfer
 
 A simple file transfer protocol implemented in Python using **two separate TCP channels**: a control channel for sending commands and a reverse-connection data channel (callback) for the actual file bytes.
