@@ -3,84 +3,97 @@ import socket
 import sys
 import time
 import os
+from tqdm import tqdm
+from protocol_logger import ProtocolLogger, print_header
 
-HOST = '127.0.0.1'          # IP
-PORT = 9999                 #Port
-diretorio = 'OFFBOUNDS'
+HOST = '127.0.0.1'
+PORT = 9999
+DATA_PORT = 9998
+DIRECTORY = 'OFFBOUNDS'
 
-def Upload(file, conn):
 
-    with open(file,'r') as f:
+def Upload(filename, conn):
+    size = os.path.getsize(filename)
+    with open(filename, 'rb') as f:
+        with tqdm(total=size, unit='B', unit_scale=True, desc='  Uploading', ncols=60) as pbar:
+            for chunk in iter(lambda: f.read(1000), b''):
+                conn.send(chunk)
+                pbar.update(len(chunk))
 
-        for line in f:
 
-enconde())
-            conn.send(line.encode())
+# ── setup ────────────────────────────────────────────────────────────────────
 
-pydir=  os.path.dirname(os.path.realpath(__file__))
-print('Diretorio do script: ', pydir)
+pydir = os.path.dirname(os.path.realpath(__file__))
 os.chdir(pydir)
+print_header('UPLOAD', HOST, HOST, PORT)
+
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+log = ProtocolLogger(s)
+
 try:
     s.connect((HOST, PORT))
-except:
-    print('# erro de conexao')
+    log.connect_event(HOST, PORT)
+except Exception as e:
+    log.event(f'Connection failed: {e}')
     sys.exit()
-diretórios)
-s.send(bytes('os.listdir()\n', 'utf-8'))
+
+# ── phase 1: discover / create remote directory ───────────────────────────────
+
+log.send(bytes('os.listdir()\n', 'utf-8'))
 time.sleep(2)
-while
-resposta = s.recv(2048).decode()
+response = log.recv(2048).decode()
 
-if diretorio not in resposta:
-    print('Diretorio nao encontrado')
-
-    s.send(bytes('os.makedirs({})\n'.format(diretorio),'utf-8'))
+if DIRECTORY not in response:
+    log.event(f"Directory '{DIRECTORY}' not found on server — creating it")
+    log.send(bytes('os.makedirs({})\n'.format(DIRECTORY), 'utf-8'))
     time.sleep(2)
-    print(s.recv(2048).decode())
+    log.recv(2048)
 else:
-    print('Conteudo do diretorio:')
-    
-
-
-    s.send(bytes('os.listdir({})\n'.format(diretorio), 'utf-8'))
+    log.event(f"Directory '{DIRECTORY}' found — listing its contents")
+    log.send(bytes('os.listdir({})\n'.format(DIRECTORY), 'utf-8'))
     time.sleep(2)
-    resposta = s.recv(2048).decode()
-    #print(type(resposta))
-    resposta = ast.literal_eval(resposta)
-    print(type(resposta))
+    response = log.recv(2048).decode()
+    response = ast.literal_eval(response)
 
-print(os.getcwd())
-print(os.listdir())
+# ── phase 2: choose a local file ─────────────────────────────────────────────
+
+print()
+print('Local directory:', os.getcwd())
+print('Local files:    ', os.listdir())
+print()
+
 while True:
-    arquivo = input('Digite o nome do arquivo para transferir: ')
-    arquivo2 = os.path.join ('CLIENTE',arquivo)
-    if not arquivo:
-        print('<ENTER> encerra o programa')
+    filename = input('Enter the filename to transfer (or press ENTER to quit): ')
+    if not filename:
         sys.exit()
-    elif arquivo in resposta:
-        print ('Este arquivo ja esxiste no servidor')
-    elif not os.path.isfile(arquivo):
-        print('este arquivo nao existe no client')
+    elif filename in response:
+        print('This file already exists on the server.')
+    elif not os.path.isfile(filename):
+        print('This file does not exist locally.')
     else:
-        print('OK')
+        log.event(f"File selected: '{filename}'")
         break
 
+# ── phase 3: open data channel and trigger upload ────────────────────────────
+
+log.event(f'Opening data channel listener on port {DATA_PORT} ...')
 s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 try:
-    s2.bind(('', 9998))
+    s2.bind(('', DATA_PORT))
     s2.listen(1)
-except:
-    print('# erro de bind')
+except Exception as e:
+    log.event(f'Bind failed: {e}')
     sys.exit()
 
-s.send(bytes('upload({}\\{})\n'.format(diretorio,arquivo), 'utf-8'))
+log.send(bytes('upload({}\\{})\n'.format(DIRECTORY, filename), 'utf-8'))
 
 conn, addr = s2.accept()
-print('Servidor {} fez a conexao'.format(addr))
+log.data_channel_event(DATA_PORT)
 
-Upload(arquivo, conn)
+# ── phase 4: transfer ────────────────────────────────────────────────────────
+
+Upload(filename, conn)
 conn.close()
 s2.close()
-print('O arquivo foi transferido')
-input('Digite <ENTER> para encerrar')
+log.event('Transfer complete!')
+input('\nPress ENTER to exit')

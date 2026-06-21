@@ -1,101 +1,118 @@
+import ast
 import socket
 import sys
 import time
 import os
-HOST = '127.0.0.1'          # IP
-PORT = 9999                 #Porta
+from tqdm import tqdm
+from protocol_logger import ProtocolLogger, print_header
+
+HOST = '127.0.0.1'
+PORT = 9999
+DATA_PORT = 9998
+
 
 def Download(path, conn):
+    filename = os.path.basename(path)
+    with open(filename, 'wb') as f:
+        with tqdm(unit='B', unit_scale=True, desc='  Downloading', ncols=60) as pbar:
+            while True:
+                data = conn.recv(1000)
+                if len(data) == 0:
+                    break
+                f.write(data)
+                pbar.update(len(data))
 
 
-    file = os.path.basename(path)
-
-    f = open(file, 'wb')
-    while True:
-    # receive 1000 bytes
-        data = conn.recv(1000)
-        print("data: ", len(data))
-        if len(data) == 0 or data is None:
-            break
-        else:
-
-            f.write(data)
-
-    f.close()
-    return None
-def selPastaLocal():
-
-    print('Diretório atual:', os.getcwd())
-    print('Conteúdo da pasta:', os.listdir())
-
-    dir = input('Escolha a pasta de Download ou <ENTER> para manter a atual: ')
-    if len(dir) > 0:
+def select_local_folder():
+    print('Current directory:', os.getcwd())
+    print('Directory contents:', os.listdir())
+    folder = input('Choose a download folder (or press ENTER to keep the current one): ')
+    if len(folder) > 0:
         try:
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
+            os.chdir(folder)
+            print('Download folder:', os.getcwd())
+        except Exception as e:
+            print('Could not change folder:', e)
+            print('Download folder:', os.getcwd())
 
-            if not os.path.isdir(dir):
-                os.makedirs(dir)
-            os.chdir(dir)
-            print('Pasta Download:', os.getcwd())
-        except:
-            print('Pasta Download:', os.getcwd())
-  
-def arquivoRemoto(s):
-    s.send(bytes('os.listdir()\n', 'utf-8'))
-    time.sleep(2) 
-    resposta = s.recv(2048).decode()
-    print('Conteúdo remoto: ', resposta)
 
-    dir = input('Digite a pasta de Upload (Remota) ou <ENTER> para manter a mesma:')
-    
-    if len(dir) > 0:
-        if dir not in eval(resposta):
-            print('Esse diretorio não pode ser selecionado')
-        else: selecionado
-            s.send(f'os.listdir({dir})\n'.encode())
-            time.sleep(2) 
-            resposta = s.recv(2048).decode()
-            print('Conteúdo remoto: ', resposta)
+def browse_remote_files(log):
+    log.send(bytes('os.listdir()\n', 'utf-8'))
+    time.sleep(2)
+    response = log.recv(2048).decode()
 
-    file = input('selecione o arquivo para download: ')
-    if file not in eval(resposta):
-        print('esse arquivo nao existe')
+    folder = input('Enter remote folder (or press ENTER to use root): ')
 
-        file = eval(resposta)[0]
+    if len(folder) > 0:
+        if folder not in ast.literal_eval(response):
+            print('That folder cannot be selected.')
+        else:
+            log.send(f'os.listdir({folder})\n'.encode())
+            time.sleep(2)
+            response = log.recv(2048).decode()
 
-    return os.path.join(dir,file)
+    filename = input('Select a file to download: ')
+    if filename not in ast.literal_eval(response):
+        print('File not found — selecting first available file.')
+        filename = ast.literal_eval(response)[0]
 
-    pydir=  os.path.dirname(os.path.realpath(__file__))
-    print('Diretorio do script: ', pydir)
-    os.chdir(pydir)
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.connect((HOST, PORT))
-    except:
-        print('# erro de conexao')
-        sys.exit()
-    print('selecao da pasta local ...')
-    selPastaLocal()
-    print('selecao do arquivo remoto ...')
-    remoto = arquivoRemoto(s)
-    if not remoto:
-        print('O arquivo remoto não foi selecionado.')
-        sys.exit()
-    print(remoto)
-    s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s2.bind(('', 9998))
-        s2.listen(1)
-    except:
-        print('# erro de bind')
-        sys.exit()
+    return os.path.join(folder, filename)
 
-    s.send('download({})\n'.format(remoto).encode())
-    conn, addr = s2.accept()
-    print('Servidor {} fez a conexao'.format(addr))
 
-    Download(remoto, conn)
-    conn.close()
-    s2.close()
-    print('O arquivo foi transferido')
-    input('Digite <ENTER> para encerrar')
-    s.close()
+# ── setup ────────────────────────────────────────────────────────────────────
+
+pydir = os.path.dirname(os.path.realpath(__file__))
+os.chdir(pydir)
+print_header('DOWNLOAD', HOST, HOST, PORT)
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+log = ProtocolLogger(s)
+
+try:
+    s.connect((HOST, PORT))
+    log.connect_event(HOST, PORT)
+except Exception as e:
+    log.event(f'Connection failed: {e}')
+    sys.exit()
+
+# ── phase 1: choose local download folder ────────────────────────────────────
+
+log.event('Selecting local download folder ...')
+select_local_folder()
+
+# ── phase 2: browse server and pick a file ───────────────────────────────────
+
+log.event('Browsing remote files ...')
+remote = browse_remote_files(log)
+if not remote:
+    log.event('No remote file selected.')
+    sys.exit()
+
+log.event(f"File selected: '{remote}'")
+
+# ── phase 3: open data channel and trigger download ──────────────────────────
+
+log.event(f'Opening data channel listener on port {DATA_PORT} ...')
+s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s2.bind(('', DATA_PORT))
+    s2.listen(1)
+except Exception as e:
+    log.event(f'Bind failed: {e}')
+    sys.exit()
+
+log.send('download({})\n'.format(remote).encode())
+
+conn, addr = s2.accept()
+log.data_channel_event(DATA_PORT)
+
+# ── phase 4: receive file ────────────────────────────────────────────────────
+
+Download(remote, conn)
+conn.close()
+s2.close()
+log.event('Transfer complete!')
+input('\nPress ENTER to exit')
+s.close()
